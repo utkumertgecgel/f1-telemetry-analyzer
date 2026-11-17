@@ -1,12 +1,14 @@
 # 🏎️ F1 Pitwall: Telemetry, Driving Style & Track Dominance Analyzer
 
+[![Live Demo](https://img.shields.io/badge/🚀_Live_Web_App-Open_in_Streamlit-FF4B4B?style=for-the-badge&logo=streamlit&logoColor=white)](https://f1-telemetry-analyzer-utkumertgecgel-tr.streamlit.app/)
+
 ![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)
 ![OpenF1 API](https://img.shields.io/badge/Data-OpenF1%20API%20(2023--2026)-E10600)
 ![Streamlit](https://img.shields.io/badge/Dashboard-Streamlit-FF4B4B?logo=streamlit&logoColor=white)
 ![Tests](https://img.shields.io/badge/Tests-Pytest%207%2F7%20Passing-2EA043?logo=pytest&logoColor=white)
 ![License](https://img.shields.io/badge/License-MIT-blue)
 
-**[🇬🇧 English Documentation](#-english-documentation) | [🇹🇷 Türkçe Dokümantasyon](#-türkçe-dokümantasyon)**
+**[🌐 Live Demo / Canlı Uygulama](https://f1-telemetry-analyzer-utkumertgecgel-tr.streamlit.app/) | [🇬🇧 English Documentation](#-english-documentation) | [🇹🇷 Türkçe Dokümantasyon](#-türkçe-dokümantasyon)**
 
 > 👨‍💻 **Author / Geliştirici:** [Utku Mert Geçgel](https://github.com/utkumertgecgel)
 
