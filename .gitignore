@@ -1,0 +1,17 @@
+# Veri Önbelleği (Boyutu büyük olduğu için GitHub'a yüklenmez)
+cache/
+
+# Pytest ve Python Bytecode
+.pytest_cache/
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+
+# IDE ve İşletim Sistemi Dosyaları
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
