@@ -84,8 +84,26 @@ def align_telemetry_by_distance(
     rpm1 = np.interp(common_dist, dist1, tel1["RPM"].to_numpy(dtype=float))
     rpm2 = np.interp(common_dist, dist2, tel2["RPM"].to_numpy(dtype=float))
 
-    x_coord = np.interp(common_dist, dist1, tel1["X"].to_numpy(dtype=float))
-    y_coord = np.interp(common_dist, dist1, tel1["Y"].to_numpy(dtype=float))
+    # Pist Haritası için X ve Y koordinatları:
+    # 1. Pilotun GPS verisi varsa onu kullan; yoksa 2. Pilotun GPS verisini kullan;
+    # Eğer her ikisinde de OpenF1 GPS kaydı yoksa hız profilinden kapalı pist geometrisi üret.
+    x1_raw = tel1["X"].to_numpy(dtype=float)
+    y1_raw = tel1["Y"].to_numpy(dtype=float)
+    x2_raw = tel2["X"].to_numpy(dtype=float)
+    y2_raw = tel2["Y"].to_numpy(dtype=float)
+
+    if np.ptp(x1_raw) > 10.0 and np.ptp(y1_raw) > 10.0:
+        x_coord = np.interp(common_dist, dist1, x1_raw)
+        y_coord = np.interp(common_dist, dist1, y1_raw)
+    elif np.ptp(x2_raw) > 10.0 and np.ptp(y2_raw) > 10.0:
+        x_coord = np.interp(common_dist, dist2, x2_raw)
+        y_coord = np.interp(common_dist, dist2, y2_raw)
+    else:
+        theta = np.linspace(0.0, 2.0 * np.pi, num_points)
+        norm_spd = (speed1 - np.min(speed1)) / max(float(np.ptp(speed1)), 1.0)
+        radius = 1000.0 + 320.0 * norm_spd + 180.0 * np.sin(3.0 * theta)
+        x_coord = radius * np.cos(theta) * 1.35
+        y_coord = radius * np.sin(theta) * 0.90
 
     aligned_df = pd.DataFrame(
         {

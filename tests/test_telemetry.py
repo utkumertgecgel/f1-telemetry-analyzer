@@ -181,3 +181,18 @@ def test_pitwall_dashboard_figure_creation():
     assert fig is not None
     assert len(fig.axes) >= 6
     plt.close(fig)
+
+
+def test_missing_gps_coordinates_fallback():
+    """OpenF1'de GPS (location) verisi 404 döndüğünde (X=0, Y=0) yedek pist geometrisinin çalıştığını doğrular."""
+    lap1 = _create_mock_lap_data("GAS", "Alpine", lap_sec=73.5, speed_offset=1.0)
+    lap2 = _create_mock_lap_data("PER", "Cadillac", lap_sec=73.9, speed_offset=0.0)
+    lap1["telemetry"]["X"] = 0.0
+    lap1["telemetry"]["Y"] = 0.0
+    lap2["telemetry"]["X"] = 0.0
+    lap2["telemetry"]["Y"] = 0.0
+
+    aligned = align_telemetry_by_distance(lap1, lap2)
+    assert np.ptp(aligned["X"].to_numpy()) > 100.0
+    assert np.ptp(aligned["Y"].to_numpy()) > 100.0
+

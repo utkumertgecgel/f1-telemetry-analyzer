@@ -1,11 +1,6 @@
 """
 Adım 1: Veri Çekme ve Ön İşleme Modülü (data_loader.py)
 
-NEDEN OPENF1 API KULLANIYORUZ?
-Formula 1 yönetimi yakın zamanda resmi 'livetiming.formula1.com' sunucularına bulut duvarı (HTTP 401)
-getirdiği için FastF1 kütüphanesi artık ücretli F1TV Pro aboneliği (F1_USERNAME / F1_PASSWORD) olmadan
-telemetri verisi indirememektedir.
-
 Bu modül, %100 ücretsiz, açık kaynaklı ve üyelik gerektirmeyen **OpenF1 API (api.openf1.org/v1)**
 üzerinden 2023, 2024, 2025 ve 2026 sezonlarının tamamına erişir; doğrudan seçilen 2 pilotun en hızlı
 turunun sensör (car_data) ve GPS konum (location) verilerini saniyeler içinde çeker ve yerel 'cache/'
@@ -14,6 +9,7 @@ klasörüne kaydeder.
 
 import hashlib
 import json
+import time
 from pathlib import Path
 from typing import Dict, Any, Tuple, List, Optional
 import numpy as np
@@ -45,7 +41,7 @@ TEAM_COLORS_FALLBACK: Dict[str, str] = {
     "haas": "#B6BABD",
 }
 
-# Sezonlara göre yedek pilot listesi (Canlı API bağlantısı yokken bile menünün çalışması için)
+# Sezonlara göre yedek pilot listesi
 SEASON_DRIVERS: Dict[int, List[Tuple[str, str, str]]] = {
     2026: [
         ("VER", "Max Verstappen", "Red Bull Racing"),
@@ -136,10 +132,13 @@ def setup_cache(cache_dir: Optional[Path] = None) -> Path:
     return target_dir
 
 
-def _cached_get_json(url: str, timeout: int = 30) -> List[Dict[str, Any]]:
+def _cached_get_json(
+    url: str, timeout: int = 30, allow_404: bool = False
+) -> List[Dict[str, Any]]:
     """
     OpenF1 API isteğini yapar ve sonucu yerel diskte JSON olarak önbelleğe alır.
-    Aynı yarış/pilot tekrar seçildiğinde internetten indirmeden 0.05 saniyede okur.
+    - allow_404=True ise 404/422 durumunda hata fırlatmak yerine boş liste [] döndürür.
+    - 429 (Rate Limit) veya geçici sunucu hatalarında otomatik tekrar dener (retry).
     """
     cache_dir = setup_cache()
     url_hash = hashlib.md5(url.encode("utf-8")).hexdigest()
@@ -153,17 +152,37 @@ def _cached_get_json(url: str, timeout: int = 30) -> List[Dict[str, Any]]:
         except Exception:
             pass
 
-    resp = requests.get(url, timeout=timeout)
-    resp.raise_for_status()
-    data = resp.json()
-
-    if isinstance(data, list) and len(data) > 0:
+    last_exc = None
+    for attempt in range(3):
         try:
-            cache_file.write_text(json.dumps(data), encoding="utf-8")
-        except Exception:
-            pass
+            resp = requests.get(url, timeout=timeout)
+            if resp.status_code in (404, 422) and allow_404:
+                return []
+            if resp.status_code in (429, 500, 502, 503, 504):
+                time.sleep(0.5 * (attempt + 1))
+                continue
+            resp.raise_for_status()
+            data = resp.json()
+            if isinstance(data, list) and len(data) > 0:
+                try:
+                    cache_file.write_text(json.dumps(data), encoding="utf-8")
+                except Exception:
+                    pass
+            return data if isinstance(data, list) else []
+        except requests.HTTPError as e:
+            if allow_404 and e.response is not None and e.response.status_code in (404, 422):
+                return []
+            last_exc = e
+            time.sleep(0.4)
+        except Exception as e:
+            last_exc = e
+            time.sleep(0.4)
 
-    return data if isinstance(data, list) else []
+    if allow_404:
+        return []
+    if last_exc:
+        raise last_exc
+    return []
 
 
 def get_season_events(year: int) -> List[str]:
@@ -172,7 +191,7 @@ def get_season_events(year: int) -> List[str]:
     OpenF1 üzerinden döndürür.
     """
     try:
-        sessions = _cached_get_json(f"{OPENF1_BASE_URL}/sessions?year={year}")
+        sessions = _cached_get_json(f"{OPENF1_BASE_URL}/sessions?year={year}", allow_404=True)
         seen = []
         for s in sessions:
             country = s.get("country_name", "")
@@ -267,7 +286,9 @@ def load_f1_session(year: int, grand_prix: str, session_type: str = "Q") -> Dict
         )
 
     session_key = matched_session["session_key"]
-    drivers_raw = _cached_get_json(f"{OPENF1_BASE_URL}/drivers?session_key={session_key}")
+    drivers_raw = _cached_get_json(
+        f"{OPENF1_BASE_URL}/drivers?session_key={session_key}", allow_404=True
+    )
 
     drivers_map: Dict[str, Dict[str, Any]] = {}
     for d in drivers_raw:
@@ -338,11 +359,10 @@ def format_laptime(td: pd.Timedelta) -> str:
 def extract_driver_fastest_lap(session: Dict[str, Any], driver_code: str) -> Dict[str, Any]:
     """
     OpenF1 API üzerinden:
-    1. Pilotun seanstaki tüm turlarını (/v1/laps) çeker ve en hızlı turunu (minimum lap_duration) bulur.
-    2. Sadece o en hızlı turun başlangıç ve bitiş saniyeleri arasındaki:
-       - Sensör verilerini (/v1/car_data -> Speed, Throttle, Brake, nGear, RPM)
-       - Pist koordinatlarını (/v1/location -> X, Y)
-       çeker, zaman ekseninde birleştirir ve 'Distance (Metre)' sütununu hesaplar.
+    1. Pilotun seanstaki tüm turlarını (/v1/laps) çeker ve en hızlı geçerli turlarını sıralar.
+    2. Sensör verisi (/v1/car_data) tam olan en hızlı turu seçer.
+    3. Pist koordinatlarını (/v1/location -> X, Y) allow_404=True korumasıyla çeker;
+       eğer o turda GPS verisi OpenF1'de eksikse (404 dönerse) analizi çökertmez.
     """
     session_key = session["session_key"]
     drivers_map = session["drivers_map"]
@@ -356,9 +376,8 @@ def extract_driver_fastest_lap(session: Dict[str, Any], driver_code: str) -> Dic
     drv_info = drivers_map[driver_code]
     driver_number = drv_info["driver_number"]
 
-    # 1. Pilotun turlarını çek
     laps_url = f"{OPENF1_BASE_URL}/laps?session_key={session_key}&driver_number={driver_number}"
-    laps_raw = _cached_get_json(laps_url)
+    laps_raw = _cached_get_json(laps_url, allow_404=True)
 
     valid_laps = [
         lap
@@ -374,52 +393,58 @@ def extract_driver_fastest_lap(session: Dict[str, Any], driver_code: str) -> Dic
             f"{driver_code} pilotunun bu seansta kaydedilmiş geçerli bir hızlı turu bulunamadı."
         )
 
-    # En hızlı turu seç
-    fastest_lap = min(valid_laps, key=lambda x: float(x["lap_duration"]))
-    lap_duration_sec = float(fastest_lap["lap_duration"])
-    lap_number = int(fastest_lap.get("lap_number", 1))
+    # En hızlıdan başlayarak sensör verisi mevcut olan ilk turu seç (ilk 4 aday turu dene)
+    sorted_laps = sorted(valid_laps, key=lambda x: float(x["lap_duration"]))
 
-    # Turun başlangıç ve bitiş zamanlarını UTC ISO formatına çevir (+00:00 olmadan, URL uyumlu)
-    t_start = pd.to_datetime(fastest_lap["date_start"], utc=True)
-    t_end = t_start + pd.Timedelta(seconds=lap_duration_sec + 0.6)
+    selected_lap = None
+    car_raw = []
+    loc_raw = []
 
-    start_iso = t_start.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3]
-    end_iso = t_end.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3]
+    for candidate in sorted_laps[:4]:
+        lap_duration_sec = float(candidate["lap_duration"])
+        t_start = pd.to_datetime(candidate["date_start"], utc=True)
+        t_end = t_start + pd.Timedelta(seconds=lap_duration_sec + 0.6)
 
-    # 2. Sadece bu en hızlı tura ait sensör (car_data) ve GPS (location) verilerini çek (~2 saniye sürer!)
-    car_url = (
-        f"{OPENF1_BASE_URL}/car_data?session_key={session_key}"
-        f"&driver_number={driver_number}&date>={start_iso}&date<={end_iso}"
-    )
-    loc_url = (
-        f"{OPENF1_BASE_URL}/location?session_key={session_key}"
-        f"&driver_number={driver_number}&date>={start_iso}&date<={end_iso}"
-    )
+        start_iso = t_start.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3]
+        end_iso = t_end.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3]
 
-    car_raw = _cached_get_json(car_url)
-    loc_raw = _cached_get_json(loc_url)
-
-    if not car_raw:
-        raise ValueError(
-            f"{driver_code} pilotunun {lap_number}. turu için telemetri sensör verisi bulunamadı."
+        car_url = (
+            f"{OPENF1_BASE_URL}/car_data?session_key={session_key}"
+            f"&driver_number={driver_number}&date>={start_iso}&date<={end_iso}"
         )
+        candidate_car = _cached_get_json(car_url, allow_404=True)
+        if candidate_car and len(candidate_car) >= 20:
+            selected_lap = candidate
+            car_raw = candidate_car
+            loc_url = (
+                f"{OPENF1_BASE_URL}/location?session_key={session_key}"
+                f"&driver_number={driver_number}&date>={start_iso}&date<={end_iso}"
+            )
+            loc_raw = _cached_get_json(loc_url, allow_404=True)
+            break
+
+    if selected_lap is None or not car_raw:
+        raise ValueError(
+            f"{driver_code} pilotu için bu seansta OpenF1 sensör (car_data) kaydı bulunamadı."
+        )
+
+    lap_duration_sec = float(selected_lap["lap_duration"])
+    lap_number = int(selected_lap.get("lap_number", 1))
 
     car_df = pd.DataFrame(car_raw)
     car_df["date"] = pd.to_datetime(car_df["date"], utc=True, format="ISO8601")
     car_df = car_df.sort_values("date").reset_index(drop=True)
 
-    # Tur başlangıcından itibaren geçen saniye (Time)
     t0 = car_df["date"].iloc[0]
     car_df["TimeSec"] = (car_df["date"] - t0).dt.total_seconds()
     car_df["Time"] = pd.to_timedelta(car_df["TimeSec"], unit="s")
 
-    # Hız (km/s -> m/s) üzerinden kümülatif Mesafe (Distance - Metre) hesabı
     dt = np.diff(car_df["TimeSec"].to_numpy(dtype=float), prepend=0.0)
     speed_ms = car_df["speed"].to_numpy(dtype=float) / 3.6
     car_df["Distance"] = np.cumsum(speed_ms * dt)
 
-    # 3. Pist Haritası için X ve Y koordinatlarını zaman ekseninde birleştir
-    if loc_raw:
+    # Pist Haritası için X ve Y koordinatlarını zaman ekseninde birleştir
+    if loc_raw and len(loc_raw) >= 10:
         loc_df = pd.DataFrame(loc_raw)
         loc_df["date"] = pd.to_datetime(loc_df["date"], utc=True, format="ISO8601")
         loc_df = loc_df.sort_values("date").reset_index(drop=True)
@@ -432,7 +457,6 @@ def extract_driver_fastest_lap(session: Dict[str, Any], driver_code: str) -> Dic
         car_df["X"] = 0.0
         car_df["Y"] = 0.0
 
-    # Sütun isimlerini standartlaştır
     telemetry = pd.DataFrame(
         {
             "Time": car_df["Time"],
