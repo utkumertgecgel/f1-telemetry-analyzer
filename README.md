@@ -95,6 +95,7 @@ This project is actively designed with a modular architecture to support upcomin
 * [ ] **Configurable Micro-Sector & Corner Zoom:** Interactive distance range sliders allowing users to zoom into a specific corner complex (e.g., *Eau Rouge – Raidillon* or *Maggotts – Becketts*) with customizable braking/throttle thresholds.
 * [ ] **Live Telemetry Replay Cursor:** Synchronized hover cursor across all telemetry channels and the 2D circuit map.
 
+
 ---
 ---
 
